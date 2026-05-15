@@ -6,7 +6,7 @@ use std::fs::File;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct OHLCV {
     timestamp: DateTime<Utc>,
     open: f64,
@@ -176,8 +176,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(path) => read_ohlcv_csv(File::open(path)?)?,
         None => read_ohlcv_csv(sample.as_bytes())?,
     };
-
-    print_ascii_candles(&bars, 14, 5);
+    println!("{:#?}", bars);
+    // print_ascii_candles(&bars, 14, 5);
     println!("总计 {} 条", bars.len());
     Ok(())
 }
