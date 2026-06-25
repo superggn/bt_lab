@@ -1,35 +1,28 @@
-//! 读取 OHLCV CSV：`timestamp,open,high,low,close,volume`（RFC3339 时间戳），ASCII K 线与极简回测小样。
-
-mod ascii_kline;
-mod backtest;
-mod ohlcv;
-mod strategy;
+//! 读取 OHLCV CSV，ASCII K 线与极简回测小样。
 
 use std::error::Error;
 use std::fs::File;
 
-use backtest::{BacktestConfig, run_backtest};
-use ohlcv::OHLCV;
-use strategy::DualSmaCrossStrategy;
-
-fn read_ohlcv_csv(rdr: impl std::io::Read) -> Result<Vec<OHLCV>, Box<dyn Error>> {
-    Ok(csv::Reader::from_reader(rdr)
-        .deserialize::<OHLCV>()
-        .collect::<Result<Vec<_>, _>>()?)
-}
+use bt_lab::backtest::{BacktestConfig, run_backtest};
+use bt_lab::ohlcv::read_ohlcv_csv;
+use bt_lab::strategy::{BollingerMeanReversionStrategy, DualSmaCrossStrategy};
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let sample = include_str!("../data/sample.csv");
+    let default_csv = include_str!("../data/ETHUSDT-1h-2026-05.csv");
     let bars = match std::env::args().nth(1) {
         Some(path) => read_ohlcv_csv(File::open(path)?)?,
-        None => read_ohlcv_csv(sample.as_bytes())?,
+        None => read_ohlcv_csv(default_csv.as_bytes())?,
     };
 
-    // ascii_kline::print_ascii_candles(&bars, 14, 5);
+    let config = BacktestConfig::default();
 
-    let mut strategy = DualSmaCrossStrategy::new(2, 5);
-    let backtest_result = run_backtest(&bars, &mut strategy, BacktestConfig::default());
-    backtest_result.print_report();
+    // 趋势跟踪：快慢 SMA 金叉 / 死叉
+    let mut sma_strategy = DualSmaCrossStrategy::new(2, 5);
+    run_backtest(&bars, &mut sma_strategy, config).print_report();
+
+    // 均值回归：布林带下轨抄底 → 上轨 / 中轨止盈
+    let mut bollinger_strategy = BollingerMeanReversionStrategy::with_exit_band(7, 2.4, true);
+    run_backtest(&bars, &mut bollinger_strategy, config).print_report();
 
     println!("\n总计 {} 根 K 线", bars.len());
     Ok(())

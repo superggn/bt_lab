@@ -45,7 +45,7 @@ pub trait Strategy {
     fn on_bar_close(&mut self, ctx: BarCloseContext<'_>) -> StrategyDirective;
 }
 
-// --------------------------------------------------------------------------- 双均线（收盘价 SMA）金叉 / 死叉
+// --------------------------------------------------------------------------- 双均线（收盘价 SMA）金叉 / 死叉 — 趋势跟踪
 
 pub struct DualSmaCrossStrategy {
     fast_period: usize,
@@ -103,6 +103,100 @@ impl Strategy for DualSmaCrossStrategy {
     }
 }
 
+// --------------------------------------------------------------------------- 布林带均值回归 — 波动率通道（与均线交叉截然不同）
+
+/// 布林带（Bollinger Bands）均值回归：价格跌入下轨后收回带内买入，升破中轨后跌回带内卖出。
+///
+/// - **入场**：上一根收盘 ≤ 下轨，当前根收盘 > 下轨（自下向上突破下轨，视为超卖反弹）。
+/// - **出场**：`exit_at_upper_band = true` 时升破上轨止盈；`false` 时涨回中轨后回落卖出。
+///
+/// 与双均线策略对比：不比较两条均线的交叉，而是用 **标准差定义的波动通道** 判断偏离与回归。
+pub struct BollingerMeanReversionStrategy {
+    period: usize,
+    std_multiplier: f64,
+    /// `true`：涨至上轨后回落卖出；`false`：涨至中轨后回落卖出。
+    exit_at_upper_band: bool,
+}
+
+impl BollingerMeanReversionStrategy {
+    pub fn new(period: usize, std_multiplier: f64) -> Self {
+        Self::with_exit_band(period, std_multiplier, false)
+    }
+
+    pub fn with_exit_band(period: usize, std_multiplier: f64, exit_at_upper_band: bool) -> Self {
+        assert!(period >= 2, "BollingerMeanReversionStrategy: period ≥ 2");
+        assert!(
+            std_multiplier > 0.0,
+            "BollingerMeanReversionStrategy: std_multiplier > 0",
+        );
+        Self {
+            period,
+            std_multiplier,
+            exit_at_upper_band,
+        }
+    }
+}
+
+impl Strategy for BollingerMeanReversionStrategy {
+    fn first_live_bar_index(&self) -> usize {
+        self.period
+    }
+
+    fn name(&self) -> String {
+        let exit_label = if self.exit_at_upper_band {
+            "上轨止盈"
+        } else {
+            "中轨止盈"
+        };
+        format!(
+            "布林带均值回归 {} × {:.1}σ {}",
+            self.period, self.std_multiplier, exit_label
+        )
+    }
+
+    fn on_bar_close(&mut self, ctx: BarCloseContext<'_>) -> StrategyDirective {
+        let bar_index = ctx.bar_index;
+        let prev_bar_index = bar_index - 1;
+
+        let Some(previous_bands) = bollinger_bands_at_bar_index(
+            ctx.close_prices,
+            prev_bar_index,
+            self.period,
+            self.std_multiplier,
+        ) else {
+            return StrategyDirective::Hold;
+        };
+        let Some(current_bands) = bollinger_bands_at_bar_index(
+            ctx.close_prices,
+            bar_index,
+            self.period,
+            self.std_multiplier,
+        ) else {
+            return StrategyDirective::Hold;
+        };
+
+        let prev_close = ctx.close_prices[prev_bar_index];
+        let current_close = ctx.close_prices[bar_index];
+
+        // 收盘自下向上突破下轨 → 买入。
+        if prev_close <= previous_bands.lower && current_close > current_bands.lower {
+            return StrategyDirective::EnterLongSpendAllCash;
+        }
+
+        if self.exit_at_upper_band {
+            if prev_close < previous_bands.upper && current_close >= current_bands.upper {
+                return StrategyDirective::ExitLong;
+            }
+        } else if prev_close >= previous_bands.middle && current_close < current_bands.middle {
+            return StrategyDirective::ExitLong;
+        }
+
+        StrategyDirective::Hold
+    }
+}
+
+// --------------------------------------------------------------------------- 共享指标
+
 #[derive(Clone, Copy)]
 struct SmaRibbon {
     fast: f64,
@@ -121,6 +215,38 @@ impl SmaRibbon {
             slow: sma_tail_mean(closes, bar_index, slow_period)?,
         })
     }
+}
+
+#[derive(Clone, Copy)]
+struct BollingerBands {
+    middle: f64,
+    lower: f64,
+    upper: f64,
+}
+
+fn bollinger_bands_at_bar_index(
+    closes: &[f64],
+    bar_index: usize,
+    period: usize,
+    std_multiplier: f64,
+) -> Option<BollingerBands> {
+    let middle = sma_tail_mean(closes, bar_index, period)?;
+    let start_bar_index = bar_index + 1 - period;
+    let variance = closes[start_bar_index..=bar_index]
+        .iter()
+        .map(|close| {
+            let delta = close - middle;
+            delta * delta
+        })
+        .sum::<f64>()
+        / period as f64;
+    let std_dev = variance.sqrt();
+    let band_width = std_multiplier * std_dev;
+    Some(BollingerBands {
+        middle,
+        lower: middle - band_width,
+        upper: middle + band_width,
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
