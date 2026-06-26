@@ -1,11 +1,18 @@
-//! 读取 OHLCV CSV，ASCII K 线与极简回测小样。
+//! 读取 OHLCV CSV，对内置策略逐一回测并打印报告。
 
 use std::error::Error;
 use std::fs::File;
 
 use bt_lab::backtest::{BacktestConfig, run_backtest};
 use bt_lab::ohlcv::read_ohlcv_csv;
-use bt_lab::strategy::{BollingerMeanReversionStrategy, DualSmaCrossStrategy};
+use bt_lab::strategy::{
+    BollingerMeanReversionStrategy, DonchianBreakoutStrategy, DualSmaCrossStrategy,
+    RsiOversoldBounceStrategy, Strategy,
+};
+
+fn run_strategy<S: Strategy>(bars: &[bt_lab::ohlcv::OHLCV], config: BacktestConfig, mut s: S) {
+    run_backtest(bars, &mut s, config).print_report();
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let default_csv = include_str!("../data/ETHUSDT-1h-2026-05.csv");
@@ -16,14 +23,29 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let config = BacktestConfig::default();
 
-    // 趋势跟踪：快慢 SMA 金叉 / 死叉
-    let mut sma_strategy = DualSmaCrossStrategy::new(2, 5);
-    run_backtest(&bars, &mut sma_strategy, config).print_report();
+    println!(
+        "数据 {} 根 K 线，初始资金 {:.0}",
+        bars.len(),
+        config.initial_cash
+    );
 
-    // 均值回归：布林带下轨抄底 → 上轨 / 中轨止盈
-    let mut bollinger_strategy = BollingerMeanReversionStrategy::with_exit_band(7, 2.4, true);
-    run_backtest(&bars, &mut bollinger_strategy, config).print_report();
+    run_strategy(&bars, config, DualSmaCrossStrategy::new(2, 5));
+    run_strategy(
+        &bars,
+        config,
+        BollingerMeanReversionStrategy::with_exit_band(7, 2.4, true),
+    );
+    run_strategy(
+        &bars,
+        config,
+        RsiOversoldBounceStrategy::new(14, 30.0, 50.0),
+    );
+    run_strategy(&bars, config, DonchianBreakoutStrategy::new(48));
 
-    println!("\n总计 {} 根 K 线", bars.len());
+    if bars.len() >= 2 {
+        let buy_hold = (bars.last().unwrap().close - bars[0].close) / bars[0].close * 100.0;
+        println!("\n买入持有参考: {buy_hold:+.2}%");
+    }
+
     Ok(())
 }
